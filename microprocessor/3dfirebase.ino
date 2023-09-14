@@ -1,130 +1,171 @@
-#include <WiFi.h>
+#include <Arduino.h>
+#if defined(ESP32)
+  #include <WiFi.h>
+#elif defined(ESP8266)
+  #include <ESP8266WiFi.h>
+#endif
+#include <Firebase_ESP_Client.h>
 #include <ESP32Servo.h>
 
-Servo myservo;  // create servo object to control a servo
-// twelve servo objects can be created on most boards
+//Provide the token generation process info.
+#include "addons/TokenHelper.h"
+//Provide the RTDB payload printing info and other helper functions.
+#include "addons/RTDBHelper.h"
 
-// GPIO the servo is attached to
-static const int servoPin = 5;
+// Insert your network credentials
+#define WIFI_SSID "NK"
+#define WIFI_PASSWORD "navkar11"
 
-// Replace with your network credentials
-const char* ssid     = "NK";
-const char* password = "navkar11";
+ #ifdef __cplusplus
+  extern "C" {
+ #endif
 
-// Set web server port number to 80
-WiFiServer server(80);
+  uint8_t temprature_sens_read();
 
-// Variable to store the HTTP request
-String header;
+#ifdef __cplusplus
+}
+#endif
 
-// Decode HTTP GET value
-String valueString = String(5);
-int pos1 = 0;
-int pos2 = 0;
+uint8_t temprature_sens_read();
 
-// Current time
-unsigned long currentTime = millis();
-// Previous time
-unsigned long previousTime = 0; 
-// Define timeout time in milliseconds (example: 2000ms = 2s)
-const long timeoutTime = 2000;
+static const int servosPins[4] = {12, 14, 5, 26};
 
-void setup() {
+Servo myservo[4];
+// Insert Firebase project API Key
+#define API_KEY "AIzaSyAiaPFkuinJ25wa8gN7kU_aFgM9tdxdeGc"
+
+// Insert RTDB URLefine the RTDB URL */
+#define DATABASE_URL "https://rcf22-785e0-default-rtdb.firebaseio.com/" 
+
+//Define Firebase Data object
+FirebaseData fbdo;
+
+FirebaseAuth auth;
+FirebaseConfig config;
+
+unsigned long sendDataPrevMillis = 0;
+int count = 0;
+int intValue = 0;
+int intL = 0;
+int intR = 0;  
+int intP = 0;
+bool signupOK = false;
+bool ready = false;
+
+void setup(){
   Serial.begin(115200);
-  
-  myservo.attach(servoPin);  // attaches the servo on the servoPin to the servo object
 
-  // Connect to Wi-Fi network with SSID and password
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  myservo[1].attach(servosPins[1]);
+  myservo[2].attach(servosPins[2]);
+  myservo[3].attach(servosPins[3]);  // attaches the servo on pin 13 to the servo object
+  myservo[4].attach(servosPins[4]);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED){
     Serial.print(".");
+    delay(300);
   }
-  // Print local IP address and start web server
-  Serial.println("");
-  Serial.println("WiFi connected.");
-  Serial.println("IP address: ");
+  Serial.println();
+  Serial.print("Connected with IP: ");
   Serial.println(WiFi.localIP());
-  server.begin();
+  Serial.println();
+
+  /* Assign the api key (required) */
+  config.api_key = API_KEY;
+
+  /* Assign the RTDB URL (required) */
+  config.database_url = DATABASE_URL;
+
+  /* Sign up */
+  if (Firebase.signUp(&config, &auth, "", "")){
+    Serial.println("ok");
+    signupOK = true;
+  }
+  else{
+    Serial.printf("%s\n", config.signer.signupError.message.c_str());
+  }
+
+  /* Assign the callback function for the long running token generation task */
+  config.token_status_callback = tokenStatusCallback; //see addons/TokenHelper.h
+  
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  if(Firebase.ready()){
+    Firebase.RTDB.setString(&fbdo, "duo/f", "Setting Up...");
+  }
 }
 
 void loop(){
-  WiFiClient client = server.available();   // Listen for incoming clients
-
-  if (client) {                             // If a new client connects,
-    currentTime = millis();
-    previousTime = currentTime;
-    Serial.println("New Client.");          // print a message out in the serial port
-    String currentLine = "";                // make a String to hold incoming data from the client
-    while (client.connected() && currentTime - previousTime <= timeoutTime) { // loop while the client's connected
-      currentTime = millis();
-      if (client.available()) {             // if there's bytes to read from the client,
-        char c = client.read();             // read a byte, then
-        Serial.write(c);                    // print it out the serial monitor
-        header += c;
-        if (c == '\n') {                    // if the byte is a newline character
-          // if the current line is blank, you got two newline characters in a row.
-          // that's the end of the client HTTP request, so send a response:
-          if (currentLine.length() == 0) {
-            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
-            // and a content-type so the client knows what's coming, then a blank line:
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-type:text/html");
-            client.println("Connection: close");
-            client.println();
-
-            // Display the HTML web page
-            client.println("<!DOCTYPE html><html>");
-            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            client.println("<link rel=\"icon\" href=\"data:,\">");
-            // CSS to style the on/off buttons 
-            // Feel free to change the background-color and font-size attributes to fit your preferences
-            client.println("<style>body { text-align: center; font-family: \"Trebuchet MS\", Arial; margin-left:auto; margin-right:auto;}");
-            client.println(".slider { width: 300px; }</style>");
-            client.println("<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js\"></script>");
-                     
-            // Web Page
-            client.println("</head><body><h1>ESP32 with Servo</h1>");
-            client.println("<p>Position: <span id=\"servoPos\"></span></p>");          
-            client.println("<input type=\"range\" min=\"0\" max=\"180\" class=\"slider\" id=\"servoSlider\" onchange=\"servo(this.value)\" value=\""+valueString+"\"/>");
-            
-            client.println("<script>var slider = document.getElementById(\"servoSlider\");");
-            client.println("var servoP = document.getElementById(\"servoPos\"); servoP.innerHTML = slider.value;");
-            client.println("slider.oninput = function() { slider.value = this.value; servoP.innerHTML = this.value; }");
-            client.println("$.ajaxSetup({timeout:1000}); function servo(pos) { ");
-            client.println("$.get(\"/?value=\" + pos + \"&\"); {Connection: close};}</script>");
-           
-            client.println("</body></html>");     
-            
-            //GET /?value=180& HTTP/1.1
-            if(header.indexOf("GET /?value=")>=0) {
-              pos1 = header.indexOf('=');
-              pos2 = header.indexOf('&');
-              valueString = header.substring(pos1+1, pos2);
-              
-              //Rotate the servo
-              myservo.write(valueString.toInt());
-              Serial.println(valueString); 
-            }         
-            // The HTTP response ends with another blank line
-            client.println();
-            // Break out of the while loop
-            break;
-          } else { // if you got a newline, then clear currentLine
-            currentLine = "";
-          }
-        } else if (c != '\r') {  // if you got anything else but a carriage return character,
-          currentLine += c;      // add it to the end of the currentLine
-        }
+  if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 1 || sendDataPrevMillis == 0)){
+    sendDataPrevMillis = millis();
+    
+    // Write an Int number on the database path test/int
+    if(ready){
+    if (Firebase.RTDB.setString(&fbdo, "duo/f", "Ready to Fight")){
+      Serial.println("PASSED");
+      Serial.println("PATH: " + fbdo.dataPath());
+      Serial.println("TYPE: " + fbdo.dataType());
+      ready = false;
+    }
+    else {
+      Serial.println("FAILED");
+      Serial.println("REASON: " + fbdo.errorReason());
+    }
+    }
+    
+    //////Gettting Int Value L
+    if (Firebase.RTDB.getInt(&fbdo, "/duo/l")) {
+      if (fbdo.dataType() == "int") {
+        intL = fbdo.intData();
+        myservo[1].write(intL);
+        Serial.println(intL);
       }
     }
-    // Clear the header variable
-    header = "";
-    // Close the connection
-    client.stop();
-    Serial.println("Client disconnected.");
-    Serial.println("");
+    else {  
+      Serial.println(fbdo.errorReason());
+    }
+
+    ////////Gettig Int Value R
+    if (Firebase.RTDB.getInt(&fbdo, "/duo/r")) {
+      if (fbdo.dataType() == "int") {
+        intR = fbdo.intData();
+        Serial.println(intR);
+        myservo[2].write(intL);
+      }
+    }
+    else {  
+      Serial.println(fbdo.errorReason());
+    }
+
+    
+    ////////Gettig Int Value P
+    if (Firebase.RTDB.getInt(&fbdo, "/duo/p")) {
+      if (fbdo.dataType() == "int") {
+        intP = fbdo.intData();
+        if(intP > 40){
+          ready = true;
+        }
+        myservo[3].write(intP);
+        Serial.println(intP);
+      }
+    }
+    else {  
+      Serial.println(fbdo.errorReason());
+    }
+    //////Updating temperature
+     intValue = (temprature_sens_read() - 32) / 1.8;
+    Serial.print((temprature_sens_read() - 32) / 1.8);
+     Serial.println(" C");
+    if (Firebase.RTDB.setInt(&fbdo, "duo/a",intValue)){
+      Serial.println("PASSED");
+      Serial.println("PATH: " + fbdo.dataPath());
+      Serial.println("TYPE: " + fbdo.dataType());
+    }
+    else {
+      Serial.println("FAILED");
+      Serial.println("REASON: " + fbdo.errorReason());
+    }
   }
 }
